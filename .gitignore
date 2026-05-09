@@ -1,0 +1,33 @@
+## macOS
+.DS_Store
+
+## Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+## Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+## Python / tooling
+.venv/
+__pycache__/
+*.pyc
+
+## Big bundled CoreML weights — the sharp.mlpackage weight file is ~2.5 GB.
+## Not tracked in git; developers download separately (see README).
+## The xcodeproj still references Wigglegram/Resources/sharp.mlpackage so
+## it ends up inside the built .app's Resources at build time.
+Wigglegram/Resources/sharp.mlpackage/
+/tmp/sharp-coreml/
+
+## Build/export scratch
+out/
+exports/
+*.mp4
+*.gif
