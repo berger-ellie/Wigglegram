@@ -2,7 +2,7 @@
 
 Snapshot for the next agent opening `/Users/ellie/xcode/Wigglegram` as a fresh Cursor workspace.
 
-Last updated: 2026-05-09 (post correctness pass + perf/mirror fix — right-handed lookAt, pixel-shift subject alignment on lateral rigs, aspect-aware bake size).
+Last updated: 2026-05-09 (post settings panel + drag-n-drop model install; Wiggle Speed is now cycle-rate in Hz; upstream at github.com/berger-ellie/Wigglegram).
 
 ## TL;DR
 
@@ -76,8 +76,9 @@ Wigglegram/
 │   ├── SHARPInferenceService.swift  CoreML load, preprocess, predict, extract, unproject
 │   └── GaussianIO.swift             Binary 3DGS PLY writer (linearToSRGB, log scales, inverseSigmoid opacity)
 ├── Views/
-│   ├── ContentView.swift         Figma-style layout: header, framed FramePlayerView, status strip, slider column, STYLE row, EXPORT
-│   ├── FramePlayerView.swift     Cycles [CGImage] at fps with ping-pong; falls back to sourceImage while baking
+│   ├── ContentView.swift         Figma-style layout: header, framed FramePlayerView, status strip, slider column, STYLE row, EXPORT, gear toolbar button → SettingsView sheet
+│   ├── FramePlayerView.swift     Cycles [CGImage] at playbackFps with ping-pong; falls back to sourceImage while baking
+│   ├── SettingsView.swift        Sheet: current-model status, drop zone for `.mlpackage` / `.mlmodelc` / `.mlmodel`, Hugging Face link
 │   ├── Theme.swift               Colors, fonts, corner radii, RainbowChip view
 │   └── WiggleSliderRow.swift     Reusable monospaced label + slider + value row
 ├── Export/
@@ -102,8 +103,9 @@ Wigglegram/
 7. `AppState.rebakeFrames()` builds poses via `WiggleCamera.poses(base:settings:convergence:)` and calls `FrameBaker.renderFrames(poses:width:height:basePose:convergence:alignSubject:)`. Preview bake dimensions come from `AppState.bakeDimensions`: shortest axis is 768, the other axis preserves the source frustum aspect (clamped to 2:1 so panoramas don't blow out the texture). Baking into the source aspect is what makes the splat fill the frame instead of leaking black borders.
 8. **Depth-sort correctness**: `FrameBaker.renderFrame` wraps each pose in a two-phase render: the first render pushes the new view matrix into `SplatSorter` via `updateCameraPose` (called unconditionally inside `SplatRenderer.render`), and we register `renderer.afterNextSort` beforehand via a `OnceResumer` so we can `await` the first sort that completes AFTER our submit. Then a second render into the same cached color/depth textures draws against the freshly sorted index buffer. Without this, `SplatRenderer.render` hands back the previous sort's indices, so background splats draw over foreground ones until the next parameter change drains the queue. Both renders reuse cached textures (one allocation per bake size, not per frame) so the perf cost is ~2 Metal submits per pose, not 2 allocations. `[Wigglegram] bake frame N/M Xs shift=(dx, dy)` + total is logged per bake.
 9. **Subject alignment (lateral rigs only)**: after each frame renders, `FrameBaker` translates the decoded CGImage in pixel space by `(+Δx · f / c, -Δy · f / c)`, where `Δ = pose.eye - basePose.eye` projected onto `basePose.right`/`basePose.up`, `f = H/(2·tan(fovY/2))` is the rendered focal length in pixels, and `c = convergenceDistance` is the median splat depth. This is the classic wigglegram keystone correction — it re-centers the convergence-plane subject so the animation reads as "subject anchored, background parallaxes around it" rather than "whole scene slides left/right." Rotate-style rigs already converge geometrically, so `alignSubject` is gated by `wiggle.style.isTranslation`. Areas revealed by the shift are filled with the same `(0.04, 0.04, 0.06)` clear colour the renderer uses, so there are no sharp transparent edges.
-10. Any slider that affects geometry (`frameDistance`, `frameCount`, `style`) goes through `AppState.scheduleRebake()`, which debounces 250 ms and cancels the in-flight bake. `fps` only restarts the playback timer.
-11. Export: `WiggleExporter.export(frames:fps:format:to:)` takes the cached `[CGImage]` directly, expands them into a ping-pong sequence, and writes MP4 or GIF. No re-rendering at export time.
+10. Any slider that affects geometry (`frameDistance`, `frameCount`, `style`) goes through `AppState.scheduleRebake()`, which debounces 250 ms and cancels the in-flight bake. `cycleHz` only restarts the playback timer — the derived `playbackFps = cycleHz × pingPongSteps` means changing `frameCount` keeps the wiggle period constant instead of speeding the animation up.
+11. Export: `WiggleExporter.export(frames:fps:format:to:)` takes the cached `[CGImage]` directly, expands them into a ping-pong sequence, and writes MP4 or GIF using `playbackFps`. No re-rendering at export time.
+12. Settings sheet: gear toolbar button → `SettingsView` sheet. Shows the currently-loaded model path and a drop zone for `.mlpackage` / `.mlmodelc` / `.mlmodel`. Installs atomically into `~/Library/Application Support/Wigglegram/models/` via `SHARPInferenceService.installModel`, then `AppState.installSHARPModel` unloads the current model, reloads from the new install, and — if a photo was already open — re-runs inference. The main preview's `onDrop` reinterprets drops as model installs while the sheet is open, so the user can drop onto either the sheet's own drop zone or onto the main preview.
 
 ### Concurrency conventions (match `../SharpSplat`)
 
@@ -142,7 +144,7 @@ Matches the spirit of the "SHARP WIGGLES" mock at `figma.com/design/6RH7x8BYrqTn
 - Display title top-left, `RainbowChip` top-right (drawn in SwiftUI, no asset).
 - Rounded-corner framed preview (28pt radius, 4pt white stroke) on the left; `FramePlayerView` renders inside the frame. Before SHARP runs, the dropped photo shows as a fallback; once frames are baked, it cycles through them in ping-pong.
 - A thin status strip *below* the frame shows stage text ("RUNNING SHARP…", "BAKING FRAMES 2/4…", "WAITING FOR MODEL…") instead of blocking the preview with a modal overlay.
-- Slider column on the right: FRAME DISTANCE (single slider, 0.5-12 cm, applies to all styles) / FRAME COUNT (2-15) / WIGGLE SPEED (2-30 fps). No PITCH, no AMPLITUDE.
+- Slider column on the right: FRAME DISTANCE (single slider, 0.5-12 cm, applies to all styles) / FRAME COUNT (2-15) / WIGGLE SPEED (0.5-8 Hz — cycle rate, not fps; `playbackFps` is derived so changing frame count keeps the perceived wiggle speed constant). No PITCH, no AMPLITUDE.
 - STYLE row is now a custom 4-button toolbar with SF Symbol glyphs + uppercase labels: H SHIFT, V SHIFT, H ROTATE, V ROTATE. Renders legibly on `#080808`, unlike the segmented picker.
 - Big red EXPORT capsule button calls `exportTapped(.mp4)`; right-click → MP4 or GIF. Disabled until frames are baked.
 - Fonts walk a chain ending in system fallbacks: `BN Hightide → Futura-Bold → AvenirNext-Heavy → system .black` for display; `OT Bulb Monoline → IBMPlexMono-Medium → Menlo-Bold → system .monospaced` for labels. Swap in a licensed face by installing it on the system — no code change needed.
@@ -160,6 +162,8 @@ One thing only, and it has to happen on a machine where someone can actually dra
 7. **Frame distance feels right.** At 3 cm in H-SHIFT the parallax should read as a subtle, camera-sized baseline. Switch to H-ROTATE at the same 3 cm — the scene should pivot around the subject (median-depth point), not around the camera, and the overall parallax magnitude on the near subject should be similar to the shift mode. Vertical counterparts behave analogously.
 8. At FRAME DISTANCE = 0.5 cm the wiggle should be tiny but still present; at 12 cm it should be dramatic without exposing splat edges.
 9. Click the red EXPORT button, save an MP4, open it in QuickTime. It should match what's on screen (same pose ordering, same ping-pong, same framing — the pixel-shift alignment bakes in, so it's already baked into exports).
+10. **Settings sheet.** Open the gear in the toolbar. The sheet should show `Model loaded.` + the on-disk path (bundled `.mlmodelc` inside the .app, or whatever's in `Application Support/Wigglegram/models/`). Drag a `.mlpackage` from Finder onto either the sheet's drop zone OR the main preview (while the sheet is open) — the UI should flip to `COPYING MODEL…`, then `Installing new model…`, then back to `Model loaded.` with the new path. The Hugging Face link opens `https://huggingface.co/pearsonkyle/Sharp-coreml` in the browser. Drops onto the main preview with the sheet closed still interpret as photos.
+11. **Wiggle Speed decoupling.** Set Wiggle Speed to 3 Hz with Frame Count 2; the full cycle takes ~0.33 s. Ramp Frame Count to 15 without touching the speed slider — the cycle duration should stay the same (the animation just looks smoother per-tick), confirming `playbackFps = cycleHz × pingPongSteps` is wired end-to-end.
 
 ## Sibling project: `../SharpSplat`
 
@@ -175,5 +179,9 @@ When in doubt, diff against that repo — most of this code is ported directly.
 ## Git
 
 - Branch: `main`.
-- One commit so far: "Initial Wigglegram: drop a photo, get an analog-style wiggle-gram."
-- No remote configured.
+- Remote: `origin` → `https://github.com/berger-ellie/Wigglegram.git` (public).
+- Commits:
+  1. `Initial Wigglegram: drop a photo, get an analog-style wiggle-gram.`
+  2. `Prerendered-frames overhaul + Figma-style UI + wigglegram correctness pass`
+  3. `Wiggle Speed is a cycle rate (Hz), + SHARP model install backend`
+  4. `Settings sheet: drag-drop SHARP install + Hugging Face link`

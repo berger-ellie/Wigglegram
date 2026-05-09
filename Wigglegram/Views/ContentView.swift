@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(AppState.self) private var state
     @State private var exportTask: Task<Void, Never>?
     @State private var isTargeted = false
+    @State private var showingSettings = false
 
     var body: some View {
         @Bindable var state = state
@@ -42,6 +43,16 @@ struct ContentView: View {
                 }
                 .tint(Theme.chrome)
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Settings", systemImage: "gearshape") {
+                    showingSettings = true
+                }
+                .tint(Theme.chrome)
+            }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
+                .environment(state)
         }
         .onDisappear { exportTask?.cancel() }
     }
@@ -93,11 +104,18 @@ struct ContentView: View {
         // Accept fileURL + image + explicit raster UTIs. SwiftUI drops
         // that come from non-file sources (Photos, Safari) surface a
         // data-representation rather than a URL, so we need both.
+        //
+        // When the Settings sheet is open we reinterpret drops as
+        // SHARP model installs — matches what the user expects when
+        // they're staring at the model drop zone.
         .onDrop(
-            of: [.fileURL, .image, .png, .jpeg, .heic, .heif, .tiff],
+            of: [.fileURL, .image, .png, .jpeg, .heic, .heif, .tiff, .package, .data],
             isTargeted: $isTargeted
         ) { providers in
-            handleDrop(providers)
+            if showingSettings {
+                return handleModelDrop(providers)
+            }
+            return handleDrop(providers)
         }
     }
 
@@ -324,6 +342,37 @@ struct ContentView: View {
 
     // MARK: - Drop / pick
 
+    /// Settings-sheet-aware drop handler for model bundles. Accepts a
+    /// file URL drop only — the mlpackage / mlmodelc directories come
+    /// in as URLs, so we don't bother trying to decode any data
+    /// representations.
+    private func handleModelDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { reading, _ in
+                guard let url = reading as URL? else { return }
+                Task { @MainActor in await state.installSHARPModel(from: url) }
+            }
+            return true
+        }
+        if provider.hasItemConformingToTypeIdentifier("public.file-url") {
+            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+                let maybeURL: URL?
+                if let u = item as? URL {
+                    maybeURL = u
+                } else if let data = item as? Data {
+                    maybeURL = URL(dataRepresentation: data, relativeTo: nil)
+                } else {
+                    maybeURL = nil
+                }
+                guard let url = maybeURL else { return }
+                Task { @MainActor in await state.installSHARPModel(from: url) }
+            }
+            return true
+        }
+        return false
+    }
+
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
 
@@ -336,7 +385,6 @@ struct ContentView: View {
             }
             return true
         }
-
         // 2. File representation — writes a temp file we control.
         for uti in ["public.file-url", "public.jpeg", "public.png",
                     "public.heic", "public.heif", "public.tiff", "public.image"] {

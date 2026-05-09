@@ -72,6 +72,14 @@ final class AppState {
     /// loading / baking.
     var frames: [CGImage] = []
 
+    /// True when a SHARP install is being staged from disk. Read by the
+    /// settings sheet to show a spinner / disable the drop zone while
+    /// `installSHARPModel` is in flight.
+    var isInstallingModel: Bool = false
+    /// Transient confirmation message from the most recent settings-side
+    /// action (install / unload). Cleared after a short timeout.
+    var settingsMessage: String?
+
     private var baker: FrameBaker?
     private var bakeTask: Task<Void, Never>?
     private var rebakeDebounceTask: Task<Void, Never>?
@@ -128,6 +136,47 @@ final class AppState {
         }
     }
 
+    /// Settings-panel entry point: stage a user-provided model bundle
+    /// into Application Support, drop the currently-loaded model, and
+    /// reload from the fresh install. Leaves the app in either
+    /// `.ready` (on success) or `.failed` (on copy/load error).
+    ///
+    /// Accepts the same bundle types as `SHARPInferenceService.installModel`:
+    /// `.mlpackage`, `.mlmodelc`, or `.mlmodel`.
+    func installSHARPModel(from sourceURL: URL) async {
+        guard !isInstallingModel else { return }
+        isInstallingModel = true
+        settingsMessage = nil
+        defer { isInstallingModel = false }
+
+        // Discard any queued work — the new model will reconstruct the
+        // cloud from scratch, so holding on to stale splat/frames is
+        // actively misleading.
+        bakeTask?.cancel()
+        rebakeDebounceTask?.cancel()
+        frames = []
+        splatURL = nil
+        sourceFrustum = nil
+        sharp.unloadModel()
+        stage = .loadingModel
+
+        do {
+            let installed = try await sharp.installModel(from: sourceURL)
+            try await sharp.loadModel()
+            settingsMessage = "Installed \(installed.lastPathComponent)"
+            // If a photo was already on screen, immediately re-process
+            // it against the new model; otherwise just sit at `.ready`.
+            if let queued = sourceImageURL {
+                await processImage(at: queued)
+            } else {
+                stage = .ready
+            }
+        } catch {
+            settingsMessage = "Install failed: \(error.localizedDescription)"
+            stage = .failed(error.localizedDescription)
+        }
+    }
+
     /// Resets everything but the loaded model so we can drop another photo.
     func reset() {
         bakeTask?.cancel()
@@ -162,7 +211,7 @@ final class AppState {
             let (cloud, frustum) = try await sharp.runInference(
                 imageURL: url, focalLengthPx: nil
             ) { [weak self] msg in
-                Task { @MainActor in self?.stage = .processing(msg) }
+                Task { @MainActor [weak self] in self?.stage = .processing(msg) }
             }
 
             stage = .processing("Writing splat…")
