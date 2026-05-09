@@ -73,7 +73,7 @@ struct ContentView: View {
                 FramePlayerView(
                     frames: state.frames,
                     fallback: state.sourceImage,
-                    fps: state.wiggle.fps
+                    fps: state.wiggle.playbackFps
                 )
                 .padding(8)
             }
@@ -173,8 +173,9 @@ struct ContentView: View {
 
                 WiggleSliderRow(
                     "Wiggle Speed",
-                    value: $state.wiggle.fps,
-                    in: 2...30
+                    value: $state.wiggle.cycleHz,
+                    in: 0.5...8,
+                    formatter: { String(format: "%.1f Hz", $0) }
                 )
             }
 
@@ -391,7 +392,7 @@ struct ContentView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let frames = state.frames
-        let fps = state.wiggle.fps
+        let fps = state.wiggle.playbackFps
 
         exportTask?.cancel()
         exportTask = Task { @MainActor in

@@ -243,7 +243,7 @@ final class AppState {
     // MARK: - Internals
 
     private func handleWiggleChange(old: WiggleSettings) {
-        // Only geometry changes trigger a rebake. `fps` is playback-only.
+        // Only geometry changes trigger a rebake. `cycleHz` is playback-only.
         if old.frameCount != wiggle.frameCount
             || old.style != wiggle.style
             || old.frameDistance != wiggle.frameDistance {

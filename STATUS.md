@@ -70,7 +70,7 @@ Wigglegram/
 │   ├── CameraPose.swift          CameraPose struct + perspectiveMatrix + lookAt (extracted from old SplatViewer)
 │   ├── GaussianCloud.swift       Positions/scales/rotations/colors/opacities + bbox + medianDepth + SourceFrustum
 │   ├── WiggleCamera.swift        `poses(base:settings:convergence:)` → discrete [CameraPose] for the current style (shift = parallel rig, rotate = toe-in)
-│   └── WiggleSettings.swift      Style enum (shift/rotate × h/v) + frameDistance (single cm baseline for all styles) + frameCount + fps
+│   └── WiggleSettings.swift      Style enum (shift/rotate × h/v) + frameDistance (single cm baseline for all styles) + frameCount + cycleHz (wiggle-rate in Hz; playbackFps derived from cycleHz × pingPongSteps)
 ├── Services/
 │   ├── FrameBaker.swift             Headless MTLDevice + SplatRenderer + SplatChunk; loadCloud + renderFrames async
 │   ├── SHARPInferenceService.swift  CoreML load, preprocess, predict, extract, unproject

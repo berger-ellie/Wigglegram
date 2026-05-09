@@ -13,6 +13,7 @@ import simd
 @Observable
 nonisolated final class SHARPInferenceService: @unchecked Sendable {
     private var model: MLModel?
+    private var _modelSourceURL: URL?
     private let lock = NSLock()
 
     /// Fixed input size SHARP was exported with (don't change).
@@ -20,11 +21,17 @@ nonisolated final class SHARPInferenceService: @unchecked Sendable {
 
     var isModelLoaded: Bool { lock.withLock { model != nil } }
 
+    /// Path to the source bundle/file that the currently-loaded model
+    /// was compiled from. `nil` when no model is loaded. Used by the
+    /// settings panel to show where the active model lives.
+    var currentModelURL: URL? { lock.withLock { _modelSourceURL } }
+
     enum Error: LocalizedError {
         case modelNotFound(String)
         case modelNotLoaded
         case imageLoadFailed(String)
         case outputExtractionFailed([String])
+        case invalidModelFile(String)
 
         var errorDescription: String? {
             switch self {
@@ -33,6 +40,7 @@ nonisolated final class SHARPInferenceService: @unchecked Sendable {
             case .imageLoadFailed(let m): return "Image load failed: \(m)"
             case .outputExtractionFailed(let names):
                 return "Could not extract SHARP outputs. Available: \(names.joined(separator: ", "))"
+            case .invalidModelFile(let m): return m
             }
         }
     }
@@ -49,7 +57,77 @@ nonisolated final class SHARPInferenceService: @unchecked Sendable {
             try MLModel(contentsOf: compiledURL, configuration: config)
         }.value
 
-        lock.withLock { model = loaded }
+        lock.withLock {
+            model = loaded
+            _modelSourceURL = modelURL
+        }
+    }
+
+    /// Drop the currently-loaded model. Next `loadModel` call rebuilds
+    /// from whatever `resolveModelURL()` currently points at. Safe to
+    /// call while no model is loaded.
+    func unloadModel() {
+        lock.withLock {
+            model = nil
+            _modelSourceURL = nil
+        }
+    }
+
+    /// Install a user-supplied model bundle into Application Support so
+    /// subsequent launches (and `loadModel` calls) pick it up.
+    ///
+    /// Accepts `.mlpackage` or `.mlmodelc` bundles (directories) or
+    /// a `.mlmodel` file. Copies the bundle atomically into
+    /// `~/Library/Application Support/Wigglegram/models/sharp.<ext>`,
+    /// replacing any existing install, and invalidates the compiled
+    /// cache so the new bundle gets recompiled on next load.
+    ///
+    /// Returns the on-disk URL of the installed bundle. Caller is
+    /// expected to follow up with `loadModel()` (typically via
+    /// `AppState.installSHARPModel`).
+    func installModel(from sourceURL: URL) async throws -> URL {
+        let ext = sourceURL.pathExtension.lowercased()
+        let valid = ["mlpackage", "mlmodelc", "mlmodel"]
+        guard valid.contains(ext) else {
+            throw Error.invalidModelFile(
+                "Expected a .mlpackage, .mlmodelc, or .mlmodel — got .\(ext.isEmpty ? "(none)" : ext)."
+            )
+        }
+
+        let fm = FileManager.default
+        let dir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Wigglegram/models", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let dest = dir.appendingPathComponent("sharp.\(ext)")
+        // Stage into a temp sibling first so the copy is atomic — a
+        // partially-copied 2.5 GB mlpackage would brick the app.
+        let staging = dir.appendingPathComponent(
+            "sharp.\(ext).staging-\(UUID().uuidString.prefix(6))"
+        )
+
+        // Copy on a background task; mlpackage copies are big.
+        try await Task.detached(priority: .userInitiated) {
+            try fm.copyItem(at: sourceURL, to: staging)
+        }.value
+
+        // Remove any existing install (even if it's a different ext,
+        // since we want a clean slate) + the compiled cache.
+        for candidate in valid {
+            let old = dir.appendingPathComponent("sharp.\(candidate)")
+            if fm.fileExists(atPath: old.path) {
+                try fm.removeItem(at: old)
+            }
+        }
+        let cacheRoot = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Wigglegram", isDirectory: true)
+        let compiledPath = cacheRoot.appendingPathComponent("sharp.mlmodelc")
+        if fm.fileExists(atPath: compiledPath.path) {
+            try? fm.removeItem(at: compiledPath)
+        }
+
+        try fm.moveItem(at: staging, to: dest)
+        return dest
     }
 
     // MARK: - Inference
