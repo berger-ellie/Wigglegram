@@ -32,4 +32,41 @@ nonisolated struct GaussianCloud: Sendable {
         }
         return BoundingBox(min: bbMin, max: bbMax)
     }
+
+    /// Median of splat depths along the camera's forward axis
+    /// (i.e. `abs(z)` in SHARP's camera-aligned coordinates). Used as
+    /// the convergence distance for rotate-style wiggles so all virtual
+    /// lenses toe-in on a physically reasonable pivot.
+    var medianDepth: Float {
+        guard count > 0 else { return 1 }
+        var depths = positions.map { abs($0.z) }
+        depths.sort()
+        return depths[depths.count / 2]
+    }
+}
+
+/// The pinhole frustum of the photo that produced a `GaussianCloud`.
+/// Preserved through SHARP so downstream code can place the virtual
+/// wigglegram-camera base pose exactly at the original photo's
+/// viewpoint — anything else sees the edges of the per-pixel-ray splat
+/// reconstruction and reads as "a splat, not a photo."
+nonisolated struct SourceFrustum: Sendable, Equatable {
+    /// Original image width in pixels.
+    var imageWidth: Int
+    /// Original image height in pixels.
+    var imageHeight: Int
+    /// Focal length in original-image pixels (matches `fOrig` in
+    /// `SHARPInferenceService.unprojectGaussians`).
+    var focalLengthPx: Float
+
+    /// Vertical FoV recovered from the pinhole model. The photo is
+    /// reproduced when the camera sits at the origin, looks down +Z,
+    /// and uses this `fovY` with aspect = width/height.
+    var fovY: Float {
+        2 * atan(Float(imageHeight) / (2 * focalLengthPx))
+    }
+
+    var aspect: Float {
+        Float(imageWidth) / Float(imageHeight)
+    }
 }

@@ -4,248 +4,367 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppState.self) private var state
-    @State private var coordinator: SplatViewer.Coordinator?
-    @State private var liveCamera: CameraPose = .default
-    @State private var animationTimer: Timer?
     @State private var exportTask: Task<Void, Never>?
     @State private var isTargeted = false
 
     var body: some View {
         @Bindable var state = state
-        HSplitView {
-            viewer
-                .frame(minWidth: 500)
-                .layoutPriority(1)
-            controls
-                .frame(minWidth: 280, idealWidth: 320)
+        ZStack(alignment: .topLeading) {
+            Theme.background.ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                    .padding(.horizontal, 40)
+                    .padding(.top, 40)
+                    .padding(.bottom, 12)
+
+                HStack(alignment: .top, spacing: 40) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        previewFrame
+                            .frame(width: 520, height: 620)
+                        statusStrip
+                            .frame(width: 520)
+                    }
+
+                    controlsColumn
+                        .frame(minWidth: 440, maxWidth: .infinity)
+                }
+                .padding(.horizontal, 40)
+                .padding(.bottom, 40)
+
+                Spacer(minLength: 0)
+            }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                if case .displaying = state.stage {
-                    Button("Open New Photo…", systemImage: "photo.badge.plus") {
-                        pickPhoto()
-                    }
+                Button("Open Photo…", systemImage: "photo.badge.plus") {
+                    pickPhoto()
                 }
+                .tint(Theme.chrome)
             }
         }
-        .onAppear { startAnimationTimer() }
-        .onDisappear {
-            animationTimer?.invalidate()
-            animationTimer = nil
-            exportTask?.cancel()
+        .onDisappear { exportTask?.cancel() }
+    }
+
+    // MARK: - Header
+
+    @ViewBuilder
+    private var header: some View {
+        HStack(alignment: .center) {
+            Text("SHARP WIGGLES")
+                .font(Theme.titleFont(size: 72))
+                .foregroundStyle(Theme.chrome)
+                .tracking(-1)
+            Spacer()
+            RainbowChip()
         }
     }
 
-    // MARK: - Viewer
+    // MARK: - Preview frame
 
     @ViewBuilder
-    private var viewer: some View {
+    private var previewFrame: some View {
         ZStack {
-            if let url = state.splatURL {
-                SplatViewer(plyURL: url, camera: .constant(liveCamera)) { coord in
-                    self.coordinator = coord
-                }
-                .ignoresSafeArea()
+            Color.black
+
+            if state.frames.isEmpty && state.sourceImage == nil {
+                dropZoneContents
             } else {
-                dropZone
-            }
-
-            if state.stage.isBusy {
-                busyOverlay
-            }
-        }
-        .background(Color.black)
-    }
-
-    @ViewBuilder
-    private var dropZone: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "rectangle.and.hand.point.up.left.filled")
-                .font(.system(size: 56, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("Drop a photo")
-                .font(.title)
-                .foregroundStyle(.secondary)
-            Text(state.stage.label)
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-            if case .ready = state.stage {
-                Button("Choose Photo…") { pickPhoto() }
-                    .buttonStyle(.borderedProminent)
-                    .padding(.top, 8)
-            } else if case .failed = state.stage {
-                Button("Retry Model Load") {
-                    Task { await state.warmUpModel() }
-                }
-                .padding(.top, 8)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(
-                    isTargeted ? Color.accentColor : Color.secondary.opacity(0.25),
-                    style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                FramePlayerView(
+                    frames: state.frames,
+                    fallback: state.sourceImage,
+                    fps: state.wiggle.fps
                 )
-                .padding(32)
+                .padding(8)
+            }
+
+            if isTargeted {
+                RoundedRectangle(cornerRadius: Theme.frameCornerRadius)
+                    .inset(by: 18)
+                    .strokeBorder(Color.white, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.frameCornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.frameCornerRadius)
+                .strokeBorder(Theme.chrome, lineWidth: Theme.frameStroke)
         )
-        .contentShape(Rectangle())
-        .onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
+        .contentShape(RoundedRectangle(cornerRadius: Theme.frameCornerRadius))
+        // Accept fileURL + image + explicit raster UTIs. SwiftUI drops
+        // that come from non-file sources (Photos, Safari) surface a
+        // data-representation rather than a URL, so we need both.
+        .onDrop(
+            of: [.fileURL, .image, .png, .jpeg, .heic, .heif, .tiff],
+            isTargeted: $isTargeted
+        ) { providers in
             handleDrop(providers)
         }
     }
 
     @ViewBuilder
-    private var busyOverlay: some View {
-        VStack(spacing: 10) {
-            ProgressView()
-                .controlSize(.large)
-            Text(state.stage.label)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+    private var dropZoneContents: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "rectangle.and.hand.point.up.left.filled")
+                .font(.system(size: 56, weight: .light))
+                .foregroundStyle(Theme.label.opacity(0.6))
+            Text("DROP A PHOTO")
+                .font(Theme.labelFont(size: 22))
+                .foregroundStyle(Theme.label)
+            Text("OR USE CHOOSE PHOTO…")
+                .font(Theme.labelFont(size: 12))
+                .foregroundStyle(Theme.label.opacity(0.5))
+            Button("CHOOSE PHOTO…") { pickPhoto() }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.chrome)
+                .foregroundStyle(.black)
+                .padding(.top, 8)
+            if case .failed = state.stage {
+                Button("RETRY MODEL LOAD") {
+                    Task { await state.warmUpModel() }
+                }
+                .buttonStyle(.bordered)
+                .tint(Theme.chrome)
+            }
         }
-        .padding(20)
-        .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.frameCornerRadius)
+                .inset(by: 18)
+                .strokeBorder(Color.white.opacity(0.25),
+                              style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+        )
     }
 
-    // MARK: - Controls
+    // MARK: - Status strip (below the frame)
 
     @ViewBuilder
-    private var controls: some View {
-        @Bindable var state = state
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("Wiggle")
-                    .font(.headline)
-
-                Picker("Style", selection: $state.wiggle.style) {
-                    ForEach(WiggleSettings.Style.allCases) { style in
-                        Text(style.label).tag(style)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                slider(
-                    "Amplitude",
-                    value: $state.wiggle.amplitudeDegrees,
-                    in: 0.5...15,
-                    suffix: "°"
-                )
-                stepper(
-                    "Frames",
-                    value: $state.wiggle.frameCount,
-                    in: 6...120,
-                    suffix: ""
-                )
-                stepper(
-                    "FPS",
-                    value: $state.wiggle.fps,
-                    in: 10...60,
-                    suffix: " fps"
-                )
-
-                Divider()
-
-                Text("Camera")
-                    .font(.headline)
-                slider("Distance", value: $state.camera.distance, in: 0.2...8, suffix: "")
-                slider("Pitch", value: bindingFromRadians($state.camera.pitch),
-                       in: -45...45, suffix: "°")
-                slider("FoV", value: bindingFromRadians($state.camera.fovY),
-                       in: 20...90, suffix: "°")
-
-                Divider()
-
-                Text("Export")
-                    .font(.headline)
-                HStack {
-                    Button("Export MP4…") { exportTapped(format: .mp4) }
-                        .disabled(!canExport)
-                    Button("Export GIF…") { exportTapped(format: .gif) }
-                        .disabled(!canExport)
-                }
-
-                if case .exporting(let p) = state.stage {
-                    ProgressView(value: p)
-                        .progressViewStyle(.linear)
-                }
-
-                if case .failed(let msg) = state.stage {
-                    Text(msg)
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 0)
+    private var statusStrip: some View {
+        HStack(spacing: 10) {
+            if state.stage.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Theme.chrome)
             }
-            .padding(16)
+            Text(state.stage.label.uppercased())
+                .font(Theme.labelFont(size: 12))
+                .foregroundStyle(Theme.label.opacity(0.75))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
         }
-        .background(Color(NSColor.windowBackgroundColor))
+        .frame(height: 24)
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Controls column
+
+    @ViewBuilder
+    private var controlsColumn: some View {
+        @Bindable var state = state
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(spacing: 4) {
+                frameDistanceRow
+
+                WiggleSliderRow(
+                    "Frame Count",
+                    value: $state.wiggle.frameCount,
+                    in: 2...15
+                )
+
+                WiggleSliderRow(
+                    "Wiggle Speed",
+                    value: $state.wiggle.fps,
+                    in: 2...30
+                )
+            }
+
+            styleRow
+                .padding(.top, 12)
+
+            Spacer(minLength: 24)
+
+            exportRow
+
+            if case .exporting(let p) = state.stage {
+                ProgressView(value: p)
+                    .progressViewStyle(.linear)
+                    .tint(Theme.exportRed)
+            }
+
+            if case .failed(let msg) = state.stage {
+                Text(msg)
+                    .font(Theme.labelFont(size: 13))
+                    .foregroundStyle(Theme.exportRed)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 40)
+    }
+
+    /// Single cm-based slider for `frameDistance`. We expose a
+    /// computed binding so the slider value is centimeters (0.5 - 12)
+    /// while `WiggleSettings.frameDistance` stays in meters.
+    @ViewBuilder
+    private var frameDistanceRow: some View {
+        @Bindable var state = state
+        let cm = Binding<Float>(
+            get: { state.wiggle.frameDistance * 100 },
+            set: { state.wiggle.frameDistance = $0 / 100 }
+        )
+        WiggleSliderRow(
+            "Frame Distance",
+            value: cm,
+            in: 0.5...12,
+            formatter: { String(format: "%.1f cm", $0) }
+        )
+    }
+
+    // MARK: - Style row
+
+    @ViewBuilder
+    private var styleRow: some View {
+        @Bindable var state = state
+        HStack(alignment: .center, spacing: 12) {
+            Text("STYLE")
+                .font(Theme.labelFont(size: 18))
+                .foregroundStyle(Theme.label)
+                .frame(width: 180, alignment: .leading)
+
+            HStack(spacing: 6) {
+                ForEach(WiggleSettings.Style.allCases) { s in
+                    styleButton(style: s, selected: state.wiggle.style == s)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private func styleButton(style: WiggleSettings.Style, selected: Bool) -> some View {
+        Button {
+            state.wiggle.style = style
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: glyph(for: style))
+                    .font(.system(size: 16, weight: .medium))
+                Text(style.label.uppercased())
+                    .font(Theme.labelFont(size: 10))
+            }
+            .frame(width: 72, height: 56)
+            .foregroundStyle(selected ? Color.black : Theme.label)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(selected ? Theme.chrome : Color.white.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(
+                        selected ? Theme.chrome : Color.white.opacity(0.25),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func glyph(for style: WiggleSettings.Style) -> String {
+        switch style {
+        case .shiftHorizontal: "arrow.left.and.right"
+        case .shiftVertical: "arrow.up.and.down"
+        case .rotateHorizontal: "arrow.triangle.2.circlepath"
+        case .rotateVertical: "arrow.triangle.2.circlepath.camera"
+        }
+    }
+
+    // MARK: - Export
+
+    @ViewBuilder
+    private var exportRow: some View {
+        HStack {
+            Spacer()
+            exportButton
+        }
+    }
+
+    @ViewBuilder
+    private var exportButton: some View {
+        Button {
+            exportTapped(format: .mp4)
+        } label: {
+            Text("EXPORT")
+                .font(Theme.exportFont(size: 44))
+                .foregroundStyle(Theme.exportLabel)
+                .frame(width: 224, height: 75)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.exportCornerRadius)
+                        .fill(Theme.exportRed)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.exportCornerRadius)
+                        .stroke(Color.white.opacity(0.35), lineWidth: 1)
+                        .blendMode(.overlay)
+                )
+                .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(!canExport)
+        .opacity(canExport ? 1 : 0.45)
+        .contextMenu {
+            Button("Export MP4…") { exportTapped(format: .mp4) }
+                .disabled(!canExport)
+            Button("Export GIF…") { exportTapped(format: .gif) }
+                .disabled(!canExport)
+        }
     }
 
     private var canExport: Bool {
-        state.splatURL != nil && coordinator != nil && !state.stage.isBusy
-    }
-
-    // MARK: - Slider helpers
-
-    private func slider(
-        _ title: String,
-        value: Binding<Float>,
-        in range: ClosedRange<Float>,
-        suffix: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title).font(.callout)
-                Spacer()
-                Text(String(format: "%.2f\(suffix)", value.wrappedValue))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            Slider(value: value, in: range)
-        }
-    }
-
-    private func stepper(
-        _ title: String,
-        value: Binding<Int>,
-        in range: ClosedRange<Int>,
-        suffix: String
-    ) -> some View {
-        HStack {
-            Text(title).font(.callout)
-            Spacer()
-            Stepper("\(value.wrappedValue)\(suffix)",
-                    value: value, in: range)
-                .labelsHidden()
-            Text("\(value.wrappedValue)\(suffix)")
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 60, alignment: .trailing)
-        }
-    }
-
-    private func bindingFromRadians(_ source: Binding<Float>) -> Binding<Float> {
-        Binding(
-            get: { source.wrappedValue * 180.0 / .pi },
-            set: { source.wrappedValue = $0 * .pi / 180.0 }
-        )
+        !state.frames.isEmpty && !state.stage.isBusy
     }
 
     // MARK: - Drop / pick
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
-        _ = provider.loadObject(ofClass: URL.self) { reading, _ in
-            if let url = reading as URL? {
-                Task { @MainActor in
-                    await state.processImage(at: url)
+
+        // 1. File URL (Finder / Photos.app when exported to disk).
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { reading, _ in
+                if let url = reading as URL? {
+                    Task { @MainActor in await state.processImage(at: url) }
                 }
             }
+            return true
         }
-        return true
+
+        // 2. File representation — writes a temp file we control.
+        for uti in ["public.file-url", "public.jpeg", "public.png",
+                    "public.heic", "public.heif", "public.tiff", "public.image"] {
+            if provider.hasItemConformingToTypeIdentifier(uti) {
+                provider.loadFileRepresentation(forTypeIdentifier: uti) { url, _ in
+                    guard let url else { return }
+                    if let copied = try? copyToTemp(url: url) {
+                        Task { @MainActor in await state.processImage(at: copied) }
+                    }
+                }
+                return true
+            }
+        }
+
+        // 3. Raw data — write ourselves.
+        for uti in ["public.jpeg", "public.png", "public.heic",
+                    "public.heif", "public.tiff", "public.image"] {
+            if provider.hasItemConformingToTypeIdentifier(uti) {
+                provider.loadDataRepresentation(forTypeIdentifier: uti) { data, _ in
+                    guard let data,
+                          let ext = extForUTI(uti),
+                          let tmp = writeTemp(data: data, ext: ext) else { return }
+                    Task { @MainActor in await state.processImage(at: tmp) }
+                }
+                return true
+            }
+        }
+
+        return false
     }
 
     private func pickPhoto() {
@@ -260,34 +379,10 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Animation timer (drives the live wiggle)
-
-    private func startAnimationTimer() {
-        animationTimer?.invalidate()
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
-            Task { @MainActor in
-                tick()
-            }
-        }
-    }
-
-    @MainActor
-    private func tick() {
-        guard case .displaying = state.stage else {
-            liveCamera = state.camera
-            return
-        }
-        let elapsed = Float(Date().timeIntervalSince(state.animationStart))
-        // One full loop takes frameCount / fps seconds.
-        let period = Float(state.wiggle.frameCount) / Float(max(state.wiggle.fps, 1))
-        let t = elapsed.truncatingRemainder(dividingBy: period) / period
-        liveCamera = state.wiggle.pose(at: t, base: state.camera)
-    }
-
-    // MARK: - Export
+    // MARK: - Export pipeline
 
     private func exportTapped(format: WiggleExporter.Format) {
-        guard let coord = coordinator else { return }
+        guard !state.frames.isEmpty else { return }
 
         let panel = NSSavePanel()
         panel.allowedContentTypes = format == .mp4 ? [.mpeg4Movie] : [.gif]
@@ -295,16 +390,18 @@ struct ContentView: View {
             + (format == .mp4 ? ".mp4" : ".gif")
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        let frames = state.frames
+        let fps = state.wiggle.fps
+
         exportTask?.cancel()
         exportTask = Task { @MainActor in
             state.stage = .exporting(progress: 0)
             do {
                 try await WiggleExporter.export(
-                    settings: state.wiggle,
-                    base: state.camera,
-                    coordinator: coord,
-                    to: url,
-                    config: .init(width: 1024, height: 1024, format: format)
+                    frames: frames,
+                    fps: fps,
+                    format: format,
+                    to: url
                 ) { p in
                     state.stage = .exporting(progress: p)
                 }
@@ -317,7 +414,43 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Drop helpers (free functions)
+
+private func copyToTemp(url: URL) throws -> URL {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WigglegramDrop", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let ext = url.pathExtension.isEmpty ? "img" : url.pathExtension
+    let out = dir.appendingPathComponent("\(UUID().uuidString.prefix(6)).\(ext)")
+    try FileManager.default.copyItem(at: url, to: out)
+    return out
+}
+
+private func writeTemp(data: Data, ext: String) -> URL? {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WigglegramDrop", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let out = dir.appendingPathComponent("\(UUID().uuidString.prefix(6)).\(ext)")
+    do {
+        try data.write(to: out)
+        return out
+    } catch { return nil }
+}
+
+private func extForUTI(_ uti: String) -> String? {
+    switch uti {
+    case "public.jpeg": "jpg"
+    case "public.png": "png"
+    case "public.heic": "heic"
+    case "public.heif": "heif"
+    case "public.tiff": "tiff"
+    case "public.image": "img"
+    default: nil
+    }
+}
+
 #Preview {
     ContentView()
         .environment(AppState())
+        .frame(width: 1200, height: 900)
 }

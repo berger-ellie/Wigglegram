@@ -17,12 +17,13 @@ struct WigglegramApp: App {
         WindowGroup("Wigglegram") {
             ContentView()
                 .environment(appState)
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 1120, minHeight: 900)
                 .task {
                     await appState.warmUpModel()
                 }
         }
-        .windowStyle(.automatic)
-        .defaultSize(width: 1100, height: 740)
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact)
+        .defaultSize(width: 1200, height: 960)
     }
 }

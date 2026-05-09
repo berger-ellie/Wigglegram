@@ -4,67 +4,73 @@ import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Render every wiggle frame to an offscreen texture and write them to
-/// disk as an MP4 (AVAssetWriter) or animated GIF (ImageIO). All GPU
-/// work happens on the viewer's coordinator; the writer side is pure
-/// Foundation / AVFoundation.
+/// Writes a list of prerendered CGImages to an MP4 (AVAssetWriter) or
+/// animated GIF (ImageIO). Rendering happens in `FrameBaker`; this type
+/// is pure Foundation / AVFoundation.
+///
+/// Expands the frames into a ping-pong sequence first so the exported
+/// file matches what the user sees in the preview.
 enum WiggleExporter {
     enum Format {
         case mp4
         case gif
     }
 
-    struct Config {
-        var width: Int = 1024
-        var height: Int = 1024
-        var format: Format = .mp4
-    }
-
-    @MainActor
-    static func export(
-        settings: WiggleSettings,
-        base: CameraPose,
-        coordinator: SplatViewer.Coordinator,
-        to url: URL,
-        config: Config,
-        progress: (@MainActor (Double) -> Void)? = nil
-    ) async throws {
-        let frames = max(2, settings.frameCount)
-        var cgFrames: [CGImage] = []
-        cgFrames.reserveCapacity(frames)
-
-        for i in 0..<frames {
-            let t = Float(i) / Float(frames)
-            let pose = settings.pose(at: t, base: base)
-            guard let cg = await coordinator.renderOffscreen(
-                camera: pose, width: config.width, height: config.height
-            ) else {
-                throw ExportError.renderFailed(frameIndex: i)
-            }
-            cgFrames.append(cg)
-            progress?(Double(i + 1) / Double(frames))
-        }
-
-        switch config.format {
-        case .mp4:
-            try await writeMP4(frames: cgFrames, fps: settings.fps, size: (config.width, config.height), to: url)
-        case .gif:
-            try writeGIF(frames: cgFrames, fps: settings.fps, to: url)
-        }
-    }
-
     enum ExportError: LocalizedError {
-        case renderFailed(frameIndex: Int)
+        case noFrames
         case writerSetupFailed(String)
         case writerFailed(String)
 
         var errorDescription: String? {
             switch self {
-            case .renderFailed(let i): return "Frame \(i) failed to render."
+            case .noFrames: return "Nothing to export — bake some frames first."
             case .writerSetupFailed(let m): return "Export setup failed: \(m)"
             case .writerFailed(let m): return "Export failed: \(m)"
             }
         }
+    }
+
+    /// - Parameters:
+    ///   - frames: the baked unique frames (no ping-pong expansion yet).
+    ///   - fps: playback rate for the exported file.
+    ///   - format: MP4 or GIF.
+    ///   - url: output location; any existing file is overwritten.
+    ///   - progress: 0..1 write progress callback on the main actor.
+    @MainActor
+    static func export(
+        frames: [CGImage],
+        fps: Int,
+        format: Format,
+        to url: URL,
+        progress: (@MainActor (Double) -> Void)? = nil
+    ) async throws {
+        guard !frames.isEmpty else { throw ExportError.noFrames }
+
+        let sequence = expandPingPong(frames)
+        let width = frames[0].width
+        let height = frames[0].height
+
+        switch format {
+        case .mp4:
+            try await writeMP4(
+                frames: sequence, fps: fps,
+                size: (width, height), to: url,
+                progress: progress
+            )
+        case .gif:
+            try writeGIF(frames: sequence, fps: fps, to: url)
+            progress?(1.0)
+        }
+    }
+
+    /// 0,1,…,N-1,N-2,…,1 — one period of the preview playback.
+    static func expandPingPong(_ frames: [CGImage]) -> [CGImage] {
+        guard frames.count > 1 else { return frames }
+        var out = frames
+        if frames.count >= 3 {
+            out.append(contentsOf: frames[1..<(frames.count - 1)].reversed())
+        }
+        return out
     }
 
     // MARK: - MP4
@@ -73,7 +79,8 @@ enum WiggleExporter {
         frames: [CGImage],
         fps: Int,
         size: (Int, Int),
-        to url: URL
+        to url: URL,
+        progress: (@MainActor (Double) -> Void)?
     ) async throws {
         try? FileManager.default.removeItem(at: url)
 
@@ -107,21 +114,19 @@ enum WiggleExporter {
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
-        let frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+        let frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
         var pts = CMTime.zero
 
-        for cg in frames {
+        for (i, cg) in frames.enumerated() {
             while !input.isReadyForMoreMediaData {
-                try await Task.sleep(nanoseconds: 5_000_000) // polled below via usleep
+                try await Task.sleep(nanoseconds: 5_000_000)
             }
             guard let buf = pixelBuffer(from: cg, width: size.0, height: size.1) else {
                 throw ExportError.writerFailed("pixelBuffer conversion failed")
             }
-            while !adaptor.assetWriterInput.isReadyForMoreMediaData {
-                usleep(1000)
-            }
             adaptor.append(buf, withPresentationTime: pts)
             pts = CMTimeAdd(pts, frameDuration)
+            await progress?(Double(i + 1) / Double(frames.count))
         }
 
         input.markAsFinished()

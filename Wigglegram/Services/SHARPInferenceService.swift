@@ -58,7 +58,7 @@ nonisolated final class SHARPInferenceService: @unchecked Sendable {
         imageURL: URL,
         focalLengthPx: Float?,
         progressHandler: @Sendable (String) -> Void = { _ in }
-    ) async throws -> GaussianCloud {
+    ) async throws -> (cloud: GaussianCloud, frustum: SourceFrustum) {
         guard let model = lock.withLock({ model }) else { throw Error.modelNotLoaded }
 
         let size = Self.modelInputSize
@@ -76,6 +76,11 @@ nonisolated final class SHARPInferenceService: @unchecked Sendable {
         // then divide by width to produce SHARP's "disparity_factor" input.
         let fOrig = focalPx * Float(actualWidth) / Float(size)
         let disparityFactor = fOrig / Float(actualWidth)
+        // Diagnostic: on first real photo, these numbers tell us whether
+        // the focal assumption is sane. Expect disparityFactor ~ 1.0 for
+        // the default focalLengthPx = modelInputSize case.
+        NSLog("[SHARP] input=%dx%d focalPx=%.1f fOrig=%.1f disparityFactor=%.4f",
+              actualWidth, actualHeight, focalPx, fOrig, disparityFactor)
 
         progressHandler("Preprocessing…")
         let imageArray = try await Task.detached(priority: .userInitiated) {
@@ -108,7 +113,13 @@ nonisolated final class SHARPInferenceService: @unchecked Sendable {
                 originalHeight: actualHeight
             )
         }.value
-        return cloud
+
+        let frustum = SourceFrustum(
+            imageWidth: actualWidth,
+            imageHeight: actualHeight,
+            focalLengthPx: fOrig
+        )
+        return (cloud, frustum)
     }
 
     // MARK: - Model location

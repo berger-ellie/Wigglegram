@@ -319,20 +319,20 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		AA100001AAAA001300000001 /* Build configuration list for PBXProject "Wigglegram" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				AA100001AAAA001500000001 /* Debug */,
-				AA100001AAAA001500000002 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		AA100001AAAA000F00000001 /* Build configuration list for PBXNativeTarget "Wigglegram" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA100001AAAA001600000001 /* Debug */,
 				AA100001AAAA001600000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA100001AAAA001300000001 /* Build configuration list for PBXProject "Wigglegram" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA100001AAAA001500000001 /* Debug */,
+				AA100001AAAA001500000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
